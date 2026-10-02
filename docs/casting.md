@@ -27,7 +27,8 @@ The repository's workflow (`.github/workflows/pages.yml`) publishes `public/` to
 https://<your-user>.github.io/<repo>/receiver.html
 ```
 
-Open that URL in a normal browser. It should say "This page is the TV side of Avatar Call". That's expected.
+Open that URL in a normal browser as a quick check. It should show the dark Avatar Call "Ready" screen. Outside a
+Cast device it can't do anything else, and the console shows the Cast SDK failing to reach `localhost:8008`. That's expected.
 
 ### 2. Register a Cast application
 
