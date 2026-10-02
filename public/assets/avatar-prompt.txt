@@ -1,0 +1,51 @@
+I'm attaching a photo of myself. Please draw a cartoon avatar of me as a single SVG file for a video-chat app. The app animates the drawing with face tracking (blinking, talking, smiling, turning my head) by moving specific named parts, so the file MUST follow the structure below exactly.
+
+LIKENESS
+- Flat, friendly vector cartoon in the style of a modern app avatar: front-facing, head and shoulders, relaxed neutral expression, eyes open and looking straight ahead, mouth closed.
+- Capture what makes me recognisable: face shape, skin tone, hairstyle (length, volume, parting, colour), eyebrow shape, eye colour, facial hair, glasses, earrings or other distinctive features, and the colour and neckline of my top.
+- Bold, simple shapes with at most light shading. No photographic detail, no text, and no background (leave it transparent; the app adds one).
+
+CANVAS
+- Root element: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400"> with no width or height attributes.
+- Centre the head horizontally on x=200: top of the hair around y=50, chin around y=300, eyes around y=185, mouth around y=250. The shoulders run off the bottom edge.
+- Keep the face roughly symmetrical about x=200 except where I'm genuinely asymmetrical (for example a side parting).
+
+REQUIRED STRUCTURE
+Ids are case-sensitive. "left" and "right" mean the left and right side of the PICTURE as you look at it, not my left and right.
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+  <defs> optional gradients / clip paths </defs>
+  <g id="body"> neck, shoulders, clothing </g>
+  <g id="head">                       (everything that moves with the head goes inside)
+    <g id="hair-back"> hair that sits behind the head; omit for very short hair </g>
+    <g id="ears"> both ears </g>
+    ... the face shape (no id needed) ...
+    <g id="cheeks"> optional soft blush circles </g>
+    <g id="eye-left"> eye white, then <g id="pupil-left"> iris + pupil + highlight </g> </g>
+    <g id="eye-right"> eye white, then <g id="pupil-right"> iris + pupil + highlight </g> </g>
+    <g id="eye-left-closed"> closed eye (a curved lash line) in the same spot as eye-left </g>
+    <g id="eye-right-closed"> closed eye in the same spot as eye-right </g>
+    <g id="brow-left"> eyebrow </g>
+    <g id="brow-right"> eyebrow </g>
+    <g id="nose"> nose </g>
+    <g id="mouth"> closed, neutral mouth </g>
+    <g id="mouth-smile"> closed smiling mouth in the same spot </g>
+    <g id="mouth-open"> open mouth (dark inside, top teeth, tongue) in the same spot; its top edge level with the closed mouth </g>
+    <g id="jaw"> only if I have a beard: the beard / chin hair </g>
+    <g id="glasses"> only if I wear glasses </g>
+    <g id="hair-front"> fringe, bangs or hairline drawn over the forehead </g>
+  </g>
+</svg>
+
+- Draw every variant (eye-left-closed, eye-right-closed, mouth-smile, mouth-open) fully visible at its correct position. The app hides whichever ones aren't in use, so do NOT give them opacity="0" or display="none".
+- Each pupil group must be inside its eye group, centred in the eye white, and small enough to shift a little sideways without leaving the white.
+- Keep the drawing order above (later elements are drawn on top).
+
+ALLOWED CONTENT (the app deletes anything else)
+- Elements: g, path, rect, circle, ellipse, line, polyline, polygon, defs, linearGradient, radialGradient, stop, clipPath, mask.
+- Put colours in fill / stroke attributes. No <style> blocks, class attributes or CSS; no scripts or event attributes; no <image>, no external links, no fonts or text, no animation elements.
+- Keep the file under 100 KB and round coordinates to at most 1 decimal place.
+
+OUTPUT
+- Give me the result as a downloadable file named avatar.svg. If you can't create files, reply with the complete SVG in a single ```svg code block, with nothing left out.
+- Before you answer, check that every applicable id above appears exactly once and that the file is valid SVG.

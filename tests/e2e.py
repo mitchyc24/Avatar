@@ -190,6 +190,45 @@ async def run(screens):
                 check(True, f"{p.name}: face tracked locally ({delegate} delegate)")
                 check(await p.js("!!window.__avatarCall.state.micTrack"), f"{p.name}: microphone captured")
 
+
+            # --- Custom SVG avatars -------------------------------------------------
+            # 1. A hostile SVG is defused by the sanitizer.
+            evil = ('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 10 10" onload="alert(1)">'
+                    '<style>body{display:none} .skin{fill:#c96}</style><script>alert(2)</script>'
+                    '<g id="Head"><rect class="skin" width="5" height="5" onclick="x()"/>'
+                    '<image href="https://evil.example/track.png"/><use xlink:href="https://evil.example/a.svg#x"/>'
+                    '<path d="M0 0" fill="url(https://evil.example/x)" style="fill:url(http://evil.example/y);stroke:red"/>'
+                    '<foreignObject><div xmlns="http://www.w3.org/1999/xhtml">hi</div></foreignObject>'
+                    '<a href="javascript:alert(3)"><circle r="1"/></a><animate attributeName="href" to="javascript:alert(4)"/>'
+                    '</g></svg>')
+            res = await a.js(f"import('/assets/js/custom-avatar.js').then(m => m.sanitizeSvg({json.dumps(evil)}))")
+            out = res.get("svg", "")
+            bad = [t for t in ("script", "onload", "onclick", "evil.example", "javascript", "foreignObject", "<style",
+                               "body", "animate", "alert") if t in out]
+            check(res["ok"] and not bad, f"hostile SVG is defused (leftovers: {bad or 'none'})")
+            check("fill:#c96" in out and "stroke:red" in out and "<circle" in out and res["parts"] == ["head"],
+                  "sanitizer keeps the harmless drawing, inlines simple CSS and finds parts case-insensitively")
+
+            # 2. A uploads the template through the real file picker.
+            doc = await a.cmd("DOM.getDocument")
+            node = await a.cmd("DOM.querySelector", nodeId=doc["root"]["nodeId"], selector="#svg-file")
+            await a.cmd("DOM.setFileInputFiles", nodeId=node["nodeId"], files=[str(ROOT / "public/assets/avatar-template.svg")])
+            await a.wait_for("document.getElementById('svg-report').textContent.includes('Custom avatar loaded')", what="upload report")
+            parts = await a.js("[...document.querySelectorAll('#svg-report code')].map(c => c.textContent)")
+            check(len(parts) == 18 and await a.js("!!window.__avatarCall.selfAvatar.custom"),
+                  f"A: template upload accepted with all {len(parts)} parts and shown in the preview")
+
+            # 3. B pastes a big SVG (forces multi-chunk transfer), wrapped in a markdown fence like an AI chat would.
+            template = (ROOT / "public/assets/avatar-template.svg").read_text()
+            filler = "".join(f'<circle cx="{(i * 37) % 400}" cy="{(i * 53) % 120}" r="1.5" fill="#{i % 4096:03x}"/>' for i in range(1400))
+            big = "```svg\n" + template.replace('<g id="body">', f'<g id="sparkles">{filler}</g><g id="body">') + "\n```"
+            await b.js("document.getElementById('svg-paste-btn').click()")
+            await b.js(f"""(() => {{ document.getElementById('svg-paste-input').value = {json.dumps(big)};
+                document.getElementById('svg-paste-apply').click(); }})()""")
+            await b.wait_for("!!window.__avatarCall.state.customSvg", what="pasted SVG")
+            b_len = await b.js("window.__avatarCall.state.customSvg.length")
+            check(b_len > 3 * 16000, f"B: pasted {b_len // 1024} KB SVG accepted (code fence stripped)")
+
             for p in pages:
                 await p.js("document.getElementById('join-btn').click()")
             for p in pages:
@@ -216,6 +255,10 @@ async def run(screens):
             await b.wait_for("document.getElementById('remote-name').textContent === 'Alice'", what="A's name on B")
             check(True, "display names exchanged")
 
+            await b.wait_for("!!window.__avatarCall.remoteAvatar.custom", what="A's custom avatar on B")
+            await a.wait_for("window.__avatarCall.remoteAvatar.customSvg?.length === " + str(b_len), what="B's big SVG on A")
+            check(True, "custom avatars arrive intact on the other side (including a multi-chunk one)")
+
             # Avatar motion from the other side's face.
             await asyncio.sleep(2.5)
             for p in pages:
@@ -225,6 +268,9 @@ async def run(screens):
             expected = TILT_RAD / (3.14159 / 4)
             check(abs(roll - expected) < 0.15,
                   f"B sees A's clockwise head tilt as clockwise (roll {roll:+.2f}, expected ≈{expected:+.2f})")
+            head_rot = await b.js("""(() => { const g = window.__avatarCall.remoteAvatar.custom.w.head.getAttribute('transform');
+                return parseFloat(g.match(/rotate\\(([-\\d.]+)/)[1]); })()""")
+            check(abs(head_rot - TILT_RAD * 57.3) < 7, f"A's custom SVG head on B's screen tilts clockwise ({head_rot:+.1f}°)")
             rolls = []
             for _ in range(16):
                 rolls.append(await a.js("window.__avatarCall.remoteAvatar.current.roll"))

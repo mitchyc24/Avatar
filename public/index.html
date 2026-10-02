@@ -59,8 +59,37 @@
             <span>Display name</span>
             <input id="name-input" name="name" type="text" maxlength="32" autocomplete="nickname" placeholder="e.g. Sam">
           </label>
+          <section class="custom-svg" aria-labelledby="custom-title">
+            <h3 id="custom-title">Use your own drawing</h3>
+            <p class="hint">Upload an SVG avatar and your face will animate it. Your friend sees it too.</p>
+            <div class="row">
+              <button id="svg-upload-btn" class="btn" type="button">Upload SVG…</button>
+              <button id="svg-paste-btn" class="btn" type="button" aria-expanded="false" aria-controls="svg-paste">Paste SVG code</button>
+              <button id="svg-remove-btn" class="btn" type="button" hidden>Back to built-in avatar</button>
+              <input id="svg-file" type="file" accept=".svg,image/svg+xml" hidden>
+            </div>
+            <div id="svg-paste" class="svg-paste" hidden>
+              <label for="svg-paste-input">SVG code</label>
+              <textarea id="svg-paste-input" rows="5" spellcheck="false" placeholder="&lt;svg xmlns=&quot;http://www.w3.org/2000/svg&quot; viewBox=&quot;0 0 400 400&quot;&gt;…"></textarea>
+              <button id="svg-paste-apply" class="btn primary" type="button">Use this SVG</button>
+            </div>
+            <div id="svg-report" class="svg-report" aria-live="polite"></div>
+            <details class="ai-help">
+              <summary>Make one from a photo with AI</summary>
+              <ol>
+                <li>Click <strong>Copy AI prompt</strong>.</li>
+                <li>Open ChatGPT (or another AI that can see images and write SVG), attach a clear, front-facing photo of yourself, and paste the prompt.</li>
+                <li>Save the <code>avatar.svg</code> it gives you and upload it here, or copy its SVG code and use <strong>Paste SVG code</strong>.</li>
+              </ol>
+              <div class="row">
+                <button id="copy-prompt-btn" class="btn" type="button">Copy AI prompt</button>
+                <a class="btn" href="/assets/avatar-template.svg" download="avatar-template.svg">Download template</a>
+              </div>
+              <p class="hint">Your photo goes to the AI service you choose, not to this app. If a feature doesn't move, the checker above says which part ids are missing. Ask the AI to add them.</p>
+            </details>
+          </section>
           <div id="swatches"></div>
-          <button id="randomize-btn" class="btn" type="button">Surprise me</button>
+          <button id="randomize-btn" class="btn builtin-only" type="button">Surprise me</button>
         </form>
       </div>
     </section>

@@ -250,3 +250,29 @@ fieldset input:focus-visible + .chip { outline: 3px solid var(--focus); outline-
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* ---------------------------------------------------------------- custom SVG avatars */
+
+.custom-svg { border: 1px dashed var(--border); border-radius: 12px; padding: 14px; margin: 0 0 18px; }
+.custom-svg h3 { font-size: 16px; margin: 0 0 4px; }
+.custom-svg .hint { margin: 0 0 10px; }
+.custom-svg .row { gap: 8px; }
+.svg-paste { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; font-weight: 600; font-size: 14px; }
+.svg-paste textarea {
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 8px 10px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text); resize: vertical;
+}
+.svg-paste .btn { align-self: flex-start; }
+.svg-report:empty { display: none; }
+.svg-report { margin-top: 10px; font-size: 14px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); }
+.svg-report.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.svg-report.error { background: var(--warn-bg); color: var(--warn-text); }
+.svg-report p { margin: 0 0 4px; font-weight: 600; }
+.svg-report ul { margin: 4px 0 0; padding-left: 18px; }
+.svg-report code { font-size: 12px; }
+.ai-help { margin-top: 12px; }
+.ai-help summary { cursor: pointer; font-weight: 600; font-size: 14px; padding: 4px 0; }
+.ai-help ol { padding-left: 20px; margin: 6px 0 10px; font-size: 14px; }
+.ai-help .hint { margin-top: 8px; }
+#self-slot-lobby.drop-target { outline: 3px dashed var(--accent); outline-offset: 4px; }
+.customize.using-custom .builtin-only { display: none; }

@@ -42,6 +42,10 @@ Stop the server with `Ctrl+C`. That also closes the public link.
 - **Camera video never leaves the device.** Each browser runs face tracking locally and sends only about 20 numbers per frame: head turn/tilt/position, blinks, gaze, jaw, smile, brows and so on.
 - **Peer-to-peer.** After the handshake, voice, chat and avatar motion go directly between the two browsers, encrypted end to end. The server never sees them.
 - **Two people per call.** A third visitor to the link is told the call is full.
+- **Bring your own avatar.** Upload or paste any SVG whose parts are named by the
+  [custom avatar schema](docs/custom-avatars.md) (`head`, `eye-left`, `mouth-open`, …) and your face animates it.
+  The lobby has a **Copy AI prompt** button: give it to ChatGPT with a photo of yourself and it draws a matching SVG.
+  Custom SVGs are cleaned against a strict allowlist on both ends, since they're sent to the other person.
 - **Without a camera** the avatar idles and its mouth follows your voice. **Without a mic** you can still chat.
 - **Accessibility.** Full keyboard support, labelled controls, a screen-reader-announced chat log and status, `prefers-reduced-motion`, and light/dark themes.
 
@@ -71,6 +75,10 @@ public/assets/
   js/tracker.js      MediaPipe Face Landmarker → pose parameters (calibration, smoothing)
   js/protocol.js     24-byte binary pose packet
   js/avatar.js       SVG avatar renderer and customisation options
+  js/custom-avatar.js  custom SVG avatars: sanitizer, part finder, animation rig
+  avatar-template.svg  example custom avatar following the schema
+  avatar-prompt.txt    AI prompt that turns a photo into a schema-compliant SVG
+docs/custom-avatars.md the custom avatar schema
   js/rtc.js          WebSocket signaling + WebRTC "perfect negotiation"
 tests/e2e.py         two headless Chromes with fake camera/mic run a full call
 ```
@@ -83,7 +91,8 @@ python3 tests/e2e.py --keep-screens /tmp/avatar-screens
 
 This starts the server and two headless Chrome instances that use a face photo as a fake camera. It checks
 local face tracking, the peer-to-peer connection, avatar motion (including the correct direction of a head
-tilt), chat both ways (and that it can't inject HTML), audio both ways, mute status, leave and rejoin, the
+tilt), custom SVG avatars (a hostile SVG is defused, a template upload, a multi-chunk paste reaching the other
+side intact and tilting correctly), chat both ways (and that it can't inject HTML), audio both ways, mute status, leave and rejoin, the
 two-person limit, and that there are no JavaScript errors.
 
 Requirements: Python 3.10+ with `aiohttp`, `openssl` (for `--lan`), and Google Chrome plus `ffmpeg` for the tests.

@@ -1,9 +1,12 @@
+import { MAX_SVG_BYTES, sanitizeSvg } from './custom-avatar.js';
 import { AvatarView, FACIAL_HAIR, GLASSES, HAIR_STYLES, PALETTES, randomStyle, sanitizeStyle } from './avatar.js';
 import { decodePose, encodePose, isNewer, neutralPose } from './protocol.js';
 import { Call, newRoomId } from './rtc.js';
 
 const $ = (id) => document.getElementById(id);
 const STYLE_KEY = 'avatar-call.style';
+const SVG_KEY = 'avatar-call.svg';
+const SVG_CHUNK = 16000; // characters per data-channel message
 const ROOM_RE = /^\/r\/([A-Za-z0-9_-]{10,64})\/?$/;
 
 const COLOR_NAMES = {
@@ -41,6 +44,8 @@ const state = {
   remoteMeter: null,
   localMeter: null,
   unread: 0,
+  customSvg: null, // sanitized SVG text of our own custom avatar
+  incomingSvg: null, // { v, n, chunks } while receiving the peer's
 };
 
 // ---------------------------------------------------------------- helpers
@@ -141,6 +146,7 @@ function buildSwatches() {
   for (const group of OPTION_GROUPS) {
     const fs = document.createElement('fieldset');
     fs.className = group.colors ? 'swatch-group' : 'option-group';
+    if (group.key !== 'bg') fs.classList.add('builtin-only');
     const legend = document.createElement('legend');
     legend.textContent = group.legend;
     fs.appendChild(legend);
@@ -380,6 +386,165 @@ async function pollPublicUrl() {
   }
 }
 
+// ---------------------------------------------------------------- custom SVG avatar
+
+function loadCustomSvg() {
+  let raw = null;
+  try { raw = localStorage.getItem(SVG_KEY); } catch { /* storage unavailable */ }
+  if (!raw) return;
+  const res = sanitizeSvg(raw);
+  if (res.ok) applyCustomSvg(res, { quiet: true });
+}
+
+function applyCustomSvg(res, { quiet = false } = {}) {
+  state.customSvg = res ? res.svg : null;
+  selfAvatar.setCustomSvg(state.customSvg);
+  $('style-form').classList.toggle('using-custom', !!res);
+  $('svg-remove-btn').hidden = !res;
+  try {
+    if (res) localStorage.setItem(SVG_KEY, res.svg);
+    else localStorage.removeItem(SVG_KEY);
+  } catch { /* it just won't be remembered next time */ }
+  if (!quiet) renderSvgReport(res);
+  sendCustomSvg();
+}
+
+function renderSvgReport(res, error) {
+  const box = $('svg-report');
+  box.replaceChildren();
+  box.className = 'svg-report';
+  if (!res && !error) return;
+  const head = document.createElement('p');
+  if (error) {
+    box.classList.add('error');
+    head.textContent = `Couldn't use that SVG: ${error}`;
+    box.append(head);
+    return;
+  }
+  box.classList.add('ok');
+  head.textContent = 'Custom avatar loaded.';
+  const parts = document.createElement('div');
+  parts.append('Animated parts: ');
+  res.parts.forEach((name, i) => {
+    if (i) parts.append(', ');
+    const c = document.createElement('code');
+    c.textContent = name;
+    parts.append(c);
+  });
+  if (!res.parts.length) parts.append('none');
+  box.append(head, parts);
+  if (res.warnings.length) {
+    const ul = document.createElement('ul');
+    for (const w of res.warnings) {
+      const li = document.createElement('li');
+      li.textContent = w;
+      ul.append(li);
+    }
+    box.append(ul);
+  }
+}
+
+function importSvgText(text) {
+  const res = sanitizeSvg(text);
+  if (!res.ok) {
+    renderSvgReport(null, res.error);
+    announce(`Couldn't use that SVG. ${res.error}`);
+    return false;
+  }
+  applyCustomSvg(res);
+  announce('Custom avatar loaded');
+  return true;
+}
+
+async function importSvgFile(file) {
+  if (!file) return;
+  if (file.size > 1024 * 1024) { renderSvgReport(null, 'the file is larger than 1 MB.'); return; }
+  if (!/\.svg$/i.test(file.name) && file.type !== 'image/svg+xml') {
+    renderSvgReport(null, 'please choose an .svg file.');
+    return;
+  }
+  importSvgText(await file.text());
+}
+
+// Send our custom SVG (or its removal) to the peer in chunks; `v` tags one transfer.
+function sendCustomSvg() {
+  const call = state.call;
+  if (!call) return;
+  const v = Math.random().toString(36).slice(2, 10);
+  const svg = state.customSvg;
+  if (!svg) { call.sendMessage({ t: 'svg', v, n: 0 }); return; }
+  const n = Math.ceil(svg.length / SVG_CHUNK);
+  for (let i = 0; i < n; i++) call.sendMessage({ t: 'svg', v, i, n, d: svg.slice(i * SVG_CHUNK, (i + 1) * SVG_CHUNK) });
+}
+
+function receiveSvgChunk(msg) {
+  const maxChunks = Math.ceil(MAX_SVG_BYTES / SVG_CHUNK);
+  if (typeof msg.v !== 'string' || !Number.isInteger(msg.n) || msg.n < 0 || msg.n > maxChunks) return;
+  if (msg.n === 0) { state.incomingSvg = null; remoteAvatar.setCustomSvg(null); return; }
+  if (!Number.isInteger(msg.i) || msg.i < 0 || msg.i >= msg.n || typeof msg.d !== 'string' || msg.d.length > SVG_CHUNK) return;
+  if (state.incomingSvg?.v !== msg.v) state.incomingSvg = { v: msg.v, n: msg.n, chunks: new Array(msg.n), got: 0 };
+  const inc = state.incomingSvg;
+  if (inc.chunks[msg.i] == null) { inc.chunks[msg.i] = msg.d; inc.got++; }
+  if (inc.got < inc.n) return;
+  state.incomingSvg = null;
+  const res = sanitizeSvg(inc.chunks.join('')); // never trust the peer's copy
+  if (res.ok) remoteAvatar.setCustomSvg(res.svg);
+  else console.warn('Ignored custom avatar from peer:', res.error);
+}
+
+$('svg-upload-btn').addEventListener('click', () => $('svg-file').click());
+$('svg-file').addEventListener('change', (ev) => {
+  importSvgFile(ev.target.files[0]);
+  ev.target.value = '';
+});
+$('svg-paste-btn').addEventListener('click', () => {
+  const box = $('svg-paste');
+  box.hidden = !box.hidden;
+  $('svg-paste-btn').setAttribute('aria-expanded', String(!box.hidden));
+  if (!box.hidden) $('svg-paste-input').focus();
+});
+$('svg-paste-apply').addEventListener('click', () => {
+  // AI chats often wrap code in ``` fences; take just the <svg>…</svg>.
+  const text = $('svg-paste-input').value;
+  const m = text.match(/<svg[\s\S]*<\/svg>/i);
+  if (importSvgText(m ? m[0] : text)) {
+    $('svg-paste-input').value = '';
+    $('svg-paste').hidden = true;
+    $('svg-paste-btn').setAttribute('aria-expanded', 'false');
+  }
+});
+$('svg-remove-btn').addEventListener('click', () => {
+  applyCustomSvg(null);
+  announce('Using the built-in avatar');
+});
+$('copy-prompt-btn').addEventListener('click', async (ev) => {
+  const btn = ev.currentTarget;
+  try {
+    const text = await (await fetch('/assets/avatar-prompt.txt')).text();
+    await navigator.clipboard.writeText(text);
+    btn.textContent = 'Prompt copied!';
+    announce('AI prompt copied. Paste it into ChatGPT along with a photo of yourself.');
+  } catch {
+    window.open('/assets/avatar-prompt.txt', '_blank', 'noopener');
+  }
+  setTimeout(() => { btn.textContent = 'Copy AI prompt'; }, 2000);
+});
+
+// Drag an .svg straight onto the lobby preview.
+const dropZone = $('self-slot-lobby');
+dropZone.addEventListener('dragover', (ev) => {
+  if ([...(ev.dataTransfer?.items || [])].some((i) => i.kind === 'file')) {
+    ev.preventDefault();
+    dropZone.classList.add('drop-target');
+  }
+});
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drop-target'));
+dropZone.addEventListener('drop', (ev) => {
+  ev.preventDefault();
+  dropZone.classList.remove('drop-target');
+  importSvgFile(ev.dataTransfer.files[0]);
+});
+
 // ---------------------------------------------------------------- chat
 
 function addChat({ who, text, mine = false, system = false }) {
@@ -492,6 +657,7 @@ function joinCall() {
     setChatEnabled(true);
     call.sendMessage({ t: 'profile', style: state.style });
     call.sendMessage({ t: 'status', muted: !state.micTrack?.enabled });
+    sendCustomSvg();
   });
   call.addEventListener('channel-close', () => setChatEnabled(false));
   call.addEventListener('peer-left', () => {
@@ -512,6 +678,8 @@ function joinCall() {
       }
     } else if (msg.t === 'status') {
       $('remote-muted').hidden = !msg.muted;
+    } else if (msg.t === 'svg') {
+      receiveSvgChunk(msg);
     }
   });
   call.addEventListener('pose', ({ detail }) => {
@@ -539,6 +707,8 @@ function joinCall() {
 
 function resetRemote() {
   state.lastRemoteSeq = null;
+  state.incomingSvg = null;
+  remoteAvatar.setCustomSvg(null);
   remoteAvatar.setPose(neutralPose());
   delete $('remote-tile').dataset.joined;
   $('remote-name').textContent = 'Waiting for your friend…';
@@ -634,6 +804,7 @@ function route() {
 
 async function boot() {
   buildSwatches();
+  loadCustomSvg();
   if (!window.RTCPeerConnection) {
     fatal('This browser does not support peer-to-peer calls. Please open the link in a current version of Chrome, Edge, Firefox or Safari.');
     return;

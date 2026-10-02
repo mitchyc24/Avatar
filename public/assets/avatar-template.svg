@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+  <title>Avatar Call template avatar</title>
+  <!--
+    Avatar Call custom avatar template. Parts are found by their id.
+    Left/right mean the left/right side of the PICTURE (as you look at it).
+    Hidden variants (eye-*-closed, mouth-open, mouth-smile) are drawn in place;
+    the app shows and hides them. Full schema: docs/custom-avatars.md
+  -->
+  <defs>
+    <linearGradient id="shirt-shade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f8f6f"/>
+      <stop offset="1" stop-color="#21684f"/>
+    </linearGradient>
+  </defs>
+
+  <g id="body">
+    <rect x="172" y="262" width="56" height="70" rx="22" fill="#d39a74"/>
+    <path d="M56,400C62,336 120,310 164,306L236,306C280,310 338,336 344,400Z" fill="url(#shirt-shade)"/>
+    <path d="M172,307Q200,330 228,307" fill="none" stroke="#1b5741" stroke-width="5" stroke-linecap="round"/>
+  </g>
+
+  <g id="head">
+    <path id="hair-back" d="M96,200C80,100 140,50 200,50C262,50 320,100 304,200L300,272C290,252 284,232 280,215L120,215C116,232 110,252 100,272Z" fill="#4e3123"/>
+
+    <g id="ears">
+      <ellipse cx="109" cy="194" rx="15" ry="22" fill="#e2a982"/>
+      <ellipse cx="291" cy="194" rx="15" ry="22" fill="#e2a982"/>
+    </g>
+
+    <!-- Face shape (not animated on its own; moves with the head) -->
+    <path d="M110,170C110,105 150,78 200,78C250,78 290,105 290,170C290,250 250,302 200,302C150,302 110,250 110,170Z" fill="#efbf9a"/>
+
+    <g id="cheeks" opacity="0.55">
+      <circle cx="146" cy="230" r="15" fill="#f08a8a"/>
+      <circle cx="254" cy="230" r="15" fill="#f08a8a"/>
+    </g>
+
+    <g id="eye-left">
+      <ellipse cx="162" cy="184" rx="16" ry="12" fill="#ffffff"/>
+      <g id="pupil-left">
+        <circle cx="162" cy="184" r="8" fill="#3b6e8f"/>
+        <circle cx="162" cy="184" r="4" fill="#111111"/>
+        <circle cx="165" cy="181" r="2" fill="#ffffff"/>
+      </g>
+    </g>
+    <g id="eye-right">
+      <ellipse cx="238" cy="184" rx="16" ry="12" fill="#ffffff"/>
+      <g id="pupil-right">
+        <circle cx="238" cy="184" r="8" fill="#3b6e8f"/>
+        <circle cx="238" cy="184" r="4" fill="#111111"/>
+        <circle cx="241" cy="181" r="2" fill="#ffffff"/>
+      </g>
+    </g>
+    <path id="eye-left-closed" d="M146,186Q162,194 178,186" fill="none" stroke="#3a2a22" stroke-width="3.5" stroke-linecap="round"/>
+    <path id="eye-right-closed" d="M222,186Q238,194 254,186" fill="none" stroke="#3a2a22" stroke-width="3.5" stroke-linecap="round"/>
+
+    <path id="brow-left" d="M140,160Q160,148 182,156" fill="none" stroke="#4a2f22" stroke-width="7" stroke-linecap="round"/>
+    <path id="brow-right" d="M218,156Q240,148 260,160" fill="none" stroke="#4a2f22" stroke-width="7" stroke-linecap="round"/>
+
+    <path id="nose" d="M198,198Q190,222 199,226Q205,228 210,224" fill="none" stroke="#c98f6a" stroke-width="3.5" stroke-linecap="round"/>
+
+    <path id="mouth" d="M180,252Q200,258 220,252" fill="none" stroke="#9c4a4a" stroke-width="4" stroke-linecap="round"/>
+    <path id="mouth-smile" d="M174,246Q200,270 226,246" fill="none" stroke="#9c4a4a" stroke-width="4" stroke-linecap="round"/>
+    <g id="mouth-open">
+      <path d="M176,246Q200,240 224,246Q222,282 200,284Q178,282 176,246Z" fill="#5b1f2c" stroke="#9c4a4a" stroke-width="3"/>
+      <path d="M182,247Q200,243 218,247L216,254Q200,251 184,254Z" fill="#ffffff"/>
+      <ellipse cx="200" cy="273" rx="13" ry="7" fill="#e06a7a"/>
+    </g>
+
+    <path id="hair-front" d="M110,168C104,104 148,70 200,70C254,70 298,104 290,168C282,140 266,118 240,108C226,126 196,134 168,128C150,124 128,136 110,168Z" fill="#6b4532"/>
+  </g>
+</svg>

@@ -1,6 +1,7 @@
 // SVG avatar: a 2.5D cartoon head driven by pose parameters from protocol.js.
 // Parts closer to the viewer (nose, eyes, mouth) shift further when the head
 // turns, which reads as depth without any 3D rendering.
+import { CustomRig } from './custom-avatar.js';
 import { neutralPose } from './protocol.js';
 
 export const PALETTES = {
@@ -213,10 +214,23 @@ export class AvatarView {
     this.updateLabel();
   }
 
+  // Show a (sanitized) custom SVG instead of the built-in face, or null to go back.
+  setCustomSvg(svgText) {
+    this.custom?.destroy();
+    this.custom = null;
+    this.customSvg = svgText || null;
+    if (svgText) {
+      this.custom = new CustomRig(this.container, svgText);
+      this.custom.svg.style.transform = this.mirrored ? 'scaleX(-1)' : '';
+    }
+    this.svg.style.display = this.custom ? 'none' : '';
+    this.updateLabel();
+  }
+
   setLabel(label) { this.label = label; this.updateLabel(); }
   updateLabel() {
     const who = this.style?.name || this.label;
-    this.svg.setAttribute('aria-label', `Animated avatar of ${who}`);
+    for (const svg of [this.svg, this.custom?.svg]) svg?.setAttribute('aria-label', `Animated avatar of ${who}`);
   }
 
   setPose(pose) {
@@ -277,6 +291,10 @@ export class AvatarView {
     const f = (v) => v.toFixed(2);
 
     const breathe = this.reducedMotion ? 0 : Math.sin(now / 1200) * 1.5;
+    if (this.custom) {
+      this.custom.render(p, now, breathe);
+      return;
+    }
     const hx = p.x * 40, hy = p.y * 30 + breathe;
     const sc = 1 + p.scale * 0.15;
     const rollDeg = p.roll * 45;
