@@ -240,15 +240,18 @@ export class AvatarView {
 
   setAudioLevel(level) { this.audioLevel = level; }
 
-  start() {
+  // maxFps caps redraws (useful on low-power devices such as TVs).
+  start({ maxFps = 120 } = {}) {
     if (this.raf) return;
+    const minGap = 1000 / maxFps - 2;
     let last = performance.now();
     const frame = (now) => {
+      this.raf = requestAnimationFrame(frame);
+      if (now - last < minGap) return;
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
       this.step(now, dt);
       this.render(now);
-      this.raf = requestAnimationFrame(frame);
     };
     this.raf = requestAnimationFrame(frame);
   }

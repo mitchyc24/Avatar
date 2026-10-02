@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Avatar Call TV</title>
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/receiver.css">
+  <script type="module" src="assets/js/receiver.js"></script>
+</head>
+<body>
+  <!-- Google Cast Custom Web Receiver. Also opens as a preview window from the sender (#preview=…). -->
+  <div id="stage" class="stage">
+    <div id="avatar" class="avatar"></div>
+    <div class="label" id="label" hidden><span id="name"></span><span id="muted" class="muted" hidden>Muted</span></div>
+  </div>
+
+  <div id="idle" class="idle">
+    <img src="assets/icon.svg" alt="" width="96" height="96">
+    <h1>Avatar Call</h1>
+    <p id="idle-text">Ready. Start casting from Avatar Call on your phone or computer.</p>
+  </div>
+
+  <p id="notice" class="notice" hidden></p>
+  <button id="sound-btn" class="sound-btn" type="button" hidden>Turn on sound</button>
+  <span id="preview-badge" class="preview-badge" hidden>TV preview</span>
+  <audio id="audio" autoplay></audio>
+</body>
+</html>

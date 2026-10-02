@@ -360,3 +360,42 @@ export class CustomRig {
 
   destroy() { this.svg.remove(); }
 }
+
+// ------------------------------------------------------------------ transfer
+
+// Custom SVGs travel as JSON messages of at most SVG_CHUNK characters.
+// `v` tags one transfer; n = 0 means "back to the built-in avatar".
+export const SVG_CHUNK = 16000;
+
+export function svgMessages(svg) {
+  const v = Math.random().toString(36).slice(2, 10);
+  if (!svg) return [{ t: 'svg', v, n: 0 }];
+  const n = Math.ceil(svg.length / SVG_CHUNK);
+  return Array.from({ length: n }, (_, i) => ({ t: 'svg', v, i, n, d: svg.slice(i * SVG_CHUNK, (i + 1) * SVG_CHUNK) }));
+}
+
+// Reassembles chunks from the other side and re-sanitizes the result (never
+// trust the sender's copy). onSvg receives sanitized SVG text, or null.
+export class SvgAssembler {
+  constructor(onSvg) {
+    this.onSvg = onSvg;
+    this.pending = null;
+  }
+
+  reset() { this.pending = null; }
+
+  push(msg) {
+    const maxChunks = Math.ceil(MAX_SVG_BYTES / SVG_CHUNK);
+    if (typeof msg.v !== 'string' || !Number.isInteger(msg.n) || msg.n < 0 || msg.n > maxChunks) return;
+    if (msg.n === 0) { this.pending = null; this.onSvg(null); return; }
+    if (!Number.isInteger(msg.i) || msg.i < 0 || msg.i >= msg.n || typeof msg.d !== 'string' || msg.d.length > SVG_CHUNK) return;
+    if (this.pending?.v !== msg.v) this.pending = { v: msg.v, n: msg.n, chunks: new Array(msg.n), got: 0 };
+    const p = this.pending;
+    if (p.chunks[msg.i] == null) { p.chunks[msg.i] = msg.d; p.got++; }
+    if (p.got < p.n) return;
+    this.pending = null;
+    const res = sanitizeSvg(p.chunks.join(''));
+    if (res.ok) this.onSvg(res.svg);
+    else console.warn('Ignored custom avatar from the other side:', res.error);
+  }
+}

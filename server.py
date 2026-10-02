@@ -220,10 +220,21 @@ async def config_handler(request):
 
 
 async def index_handler(request):
-    room = request.match_info.get("room")
-    if room is not None and not ID_RE.match(room):
-        raise web.HTTPNotFound()
     return web.FileResponse(PUBLIC / "index.html", headers={"Cache-Control": "no-cache"})
+
+
+async def legacy_room_handler(request):
+    # Rooms used to live at /r/<id>; they're now in the fragment so static hosting works.
+    room = request.match_info["room"]
+    if not ID_RE.match(room):
+        raise web.HTTPNotFound()
+    raise web.HTTPFound(f"/#room={room}")
+
+
+def static_file(name):
+    async def handler(request):
+        return web.FileResponse(PUBLIC / name, headers={"Cache-Control": "no-cache"})
+    return handler
 
 
 @web.middleware
@@ -232,8 +243,9 @@ async def security_headers(request, handler):
     host = request.host
     response.headers.setdefault("Content-Security-Policy", "; ".join([
         "default-src 'self'",
-        "script-src 'self' 'wasm-unsafe-eval'",
-        f"connect-src 'self' wss://{host} ws://{host}",
+        # Google's Cast sender SDK (Cast mode only). No scheme: on http://localhost it loads its parts over http.
+        "script-src 'self' 'wasm-unsafe-eval' www.gstatic.com",
+        f"connect-src 'self' wss://{host} ws://{host} www.gstatic.com",
         "img-src 'self' data: blob:",
         "media-src 'self' blob: mediastream:",
         "style-src 'self'",
@@ -257,7 +269,9 @@ def make_app(public_url=None):
     app["config"] = load_config()
     app["shared"] = {"public_url": public_url}  # mutable after startup (tunnel URL arrives later)
     app.router.add_get("/", index_handler)
-    app.router.add_get("/r/{room}", index_handler)
+    app.router.add_get("/r/{room}", legacy_room_handler)
+    app.router.add_get("/receiver.html", static_file("receiver.html"))
+    app.router.add_get("/cast-config.json", static_file("cast-config.json"))
     app.router.add_get("/ws/{room}", ws_handler)
     app.router.add_get("/api/config", config_handler)
     app.router.add_static("/assets", PUBLIC / "assets")

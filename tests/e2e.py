@@ -60,6 +60,7 @@ class Page:
         self.pending = {}
         self.errors = []
         self.logs = []
+        self.proc = None
 
     async def launch(self, session):
         self.profile = tempfile.mkdtemp(prefix=f"avatar-e2e-{self.name}-")
@@ -84,6 +85,24 @@ class Page:
         self.reader = asyncio.create_task(self.read())
         await self.cmd("Runtime.enable")
         await self.cmd("Page.enable")
+
+    async def attach_tab(self, session, url_part, name):
+        """Connect to another tab of this browser (e.g. a popup the app opened)."""
+        for _ in range(100):
+            async with session.get(f"http://127.0.0.1:{self.port}/json/list") as r:
+                targets = await r.json()
+            found = [t for t in targets if t["type"] == "page" and url_part in t["url"]]
+            if found:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise AssertionError(f"{name}: no tab with {url_part!r}")
+        tab = Page(name, self.port, None)
+        tab.ws = await session.ws_connect(found[0]["webSocketDebuggerUrl"], max_msg_size=0)
+        tab.reader = asyncio.create_task(tab.read())
+        await tab.cmd("Runtime.enable")
+        await tab.cmd("Page.enable")
+        return tab
 
     async def read(self):
         async for msg in self.ws:
@@ -110,8 +129,9 @@ class Page:
             raise RuntimeError(f"{self.name}: {method} failed: {res['error']}")
         return res["result"]
 
-    async def js(self, expr):
-        res = await self.cmd("Runtime.evaluate", expression=expr, awaitPromise=True, returnByValue=True)
+    async def js(self, expr, gesture=False):
+        res = await self.cmd("Runtime.evaluate", expression=expr, awaitPromise=True, returnByValue=True,
+                             userGesture=gesture)
         if "exceptionDetails" in res:
             raise RuntimeError(f"{self.name}: JS error in {expr!r}: {res['exceptionDetails']}")
         return res["result"].get("value")
@@ -134,6 +154,8 @@ class Page:
             await self.ws.close()
         except Exception:
             pass
+        if not self.proc:
+            return
         self.proc.terminate()
         try:
             self.proc.wait(5)
@@ -171,7 +193,7 @@ async def run(screens):
             pages = [a, b]
             await asyncio.gather(a.launch(session), b.launch(session))
             room = "e2e" + secrets.token_urlsafe(12)
-            url = f"http://localhost:{SERVER_PORT}/r/{room}"
+            url = f"http://localhost:{SERVER_PORT}/#room={room}"
             print(f"Room: {url}")
 
             for p, name in ((a, "Alice"), (b, "Bob")):
@@ -279,14 +301,14 @@ async def run(screens):
 
             # Audio: Chrome's fake microphone plays a periodic beep; check its energy arrives at the other side.
             audio_stats = """(async () => {
-                const pc = window.__avatarCall.state.call.pc; const out = {energy: 0, bytesIn: 0, bytesOut: 0};
+                const pc = window.__avatarCall.state.call.link.pc; const out = {energy: 0, bytesIn: 0, bytesOut: 0};
                 (await pc.getStats()).forEach((s) => {
                   if (s.type === 'inbound-rtp' && s.kind === 'audio') { out.energy += s.totalAudioEnergy || 0; out.bytesIn += s.bytesReceived; }
                   if (s.type === 'outbound-rtp' && s.kind === 'audio') out.bytesOut += s.bytesSent;
                 });
                 out.senders = pc.getSenders().map((s) => s.track?.kind || null);
                 out.directions = pc.getTransceivers().map((t) => t.currentDirection);
-                out.polite = window.__avatarCall.state.call.polite;
+                out.polite = window.__avatarCall.state.call.link.polite;
                 return out; })()"""
             before = [await p.js(audio_stats) for p in pages]
             await asyncio.sleep(3)
@@ -333,7 +355,7 @@ async def run(screens):
                 await asyncio.sleep(0.5)
                 await a.screenshot(Path(screens) / "call_A_phone.png")
                 await b.js("document.getElementById('leave-btn').click()")
-                await b.cmd("Page.navigate", url=f"http://localhost:{SERVER_PORT}/r/{room}x")
+                await b.cmd("Page.navigate", url=f"http://localhost:{SERVER_PORT}/#room={room}x")
                 await b.wait_for("!!window.__avatarCall", what="lobby")
                 await asyncio.sleep(1)
                 await b.screenshot(Path(screens) / "lobby_B.png")
@@ -348,7 +370,105 @@ async def run(screens):
             await p.close()
         server.terminate()
         server.wait(5)
-    print(f"\nAll {len(passed)} checks passed.")
+    print(f"\n{len(passed)} checks passed so far.")
+
+
+STATIC_PORT = 8798
+
+
+async def run_cast(screens):
+    """Cast mode on static hosting under a sub-path, like GitHub Pages: no Python
+    server at all. The sender opens the TV receiver as a preview window, which
+    talks to it the same way a Chromecast would (handshake, then WebRTC)."""
+    tilt, _ = make_fixtures()
+    site = Path(tempfile.mkdtemp(prefix="avatar-pages-"))
+    (site / "avatar-call").symlink_to(ROOT / "public")
+    static = subprocess.Popen([sys.executable, "-m", "http.server", str(STATIC_PORT), "--bind", "127.0.0.1",
+                               "--directory", str(site)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    pages = []
+    try:
+        async with aiohttp.ClientSession() as session:
+            await asyncio.sleep(0.5)
+            d = Page("D", 9334, tilt)
+            pages.append(d)
+            await d.launch(session)
+            base = f"http://localhost:{STATIC_PORT}/avatar-call/"
+            await d.cmd("Page.navigate", url=base)
+            await d.wait_for("!!window.__avatarCall && !document.getElementById('landing').hidden", what="landing")
+            check(await d.js("document.getElementById('start-btn').disabled && !document.getElementById('serverless-note').hidden"),
+                  "static hosting: calls are disabled with an explanation; the app loads from a sub-path")
+
+            await d.js("document.getElementById('cast-mode-btn').click()")
+            await d.wait_for("!document.getElementById('cast').hidden && document.getElementById('cast-status').textContent.length > 0",
+                             what="cast screen")
+            status = await d.js("document.getElementById('cast-status').textContent")
+            check("cast-config.json" in status or "Chrome" in status,
+                  f"Cast screen explains missing setup ({status[:60]}…)")
+            await d.js(f"""(() => {{ const i = document.getElementById('name-input');
+                i.value = 'Dana'; i.dispatchEvent(new Event('input', {{bubbles: true}})); }})()""")
+            doc = await d.cmd("DOM.getDocument")
+            node = await d.cmd("DOM.querySelector", nodeId=doc["root"]["nodeId"], selector="#svg-file")
+            await d.cmd("DOM.setFileInputFiles", nodeId=node["nodeId"], files=[str(ROOT / "public/assets/avatar-template.svg")])
+            await d.js("document.getElementById('media-btn').click()")
+            await d.wait_for("window.__avatarCall.state.tracker?.running && window.__avatarCall.selfAvatar.target.tracking",
+                             timeout=90, what="face tracking (assets from sub-path)")
+            check(True, "face tracking loads its model from the sub-path")
+
+            await d.js("document.getElementById('cast-preview-btn').click()", gesture=True)  # pop-ups need a click
+            tv = await d.attach_tab(session, "receiver.html#preview=", "TV")
+            pages.append(tv)
+            await tv.wait_for("!!window.__avatarTv?.session?.link?.connected", timeout=20, what="WebRTC link to TV")
+            await tv.wait_for("document.getElementById('idle').hidden", what="avatar on screen")
+            check(True, "TV preview: handshake over the cast transport, then direct WebRTC")
+            await tv.wait_for("document.getElementById('name').textContent === 'Dana'", what="name on TV")
+            await tv.wait_for("!!window.__avatarTv.avatar.custom", what="custom SVG on TV")
+            check(True, "TV shows the sender's name and custom SVG avatar")
+            await asyncio.sleep(2)
+            roll = await tv.js("window.__avatarTv.avatar.current.roll")
+            expected = TILT_RAD / (3.14159 / 4)
+            check(abs(roll - expected) < 0.15, f"TV mirrors the sender's head tilt (roll {roll:+.2f}, expected ≈{expected:+.2f})")
+            audio = """(async () => { const r = {e: 0, bytes: 0}; (await window.__avatarTv.session.link.pc.getStats()).forEach((s) => {
+                if (s.type === 'inbound-rtp' && s.kind === 'audio') { r.e += s.totalAudioEnergy || 0; r.bytes += s.bytesReceived; } });
+                return r; })()"""
+            a0 = await tv.js(audio)
+            await asyncio.sleep(2)
+            a1 = await tv.js(audio)
+            check(a1["bytes"] - a0["bytes"] > 2000, f"TV receives the sender's voice ({(a1['bytes'] - a0['bytes']) // 1024} KB in 2 s)")
+            check(await tv.js("document.getElementById('audio').muted && !document.getElementById('sound-btn').hidden"),
+                  "preview window starts muted (it sits next to the mic) with a Turn on sound button")
+            await tv.js("document.getElementById('sound-btn').click()", gesture=True)
+            a2 = await tv.js(audio)
+            await asyncio.sleep(3)
+            a3 = await tv.js(audio)
+            check(a3["e"] - a2["e"] > 1e-4, f"after Turn on sound the voice plays (audio energy +{a3['e'] - a2['e']:.4f})")
+            await d.js("document.getElementById('cast-voice').click()")
+            await tv.wait_for("!document.getElementById('muted').hidden", what="voice-off badge")
+            check(True, "turning voice off shows Muted on the TV")
+            if screens:
+                await tv.cmd("Emulation.setDeviceMetricsOverride", width=1280, height=720, deviceScaleFactor=1, mobile=False)
+                await asyncio.sleep(0.5)
+                await tv.screenshot(Path(screens) / "tv_preview.png")
+                await d.screenshot(Path(screens) / "cast_sender.png")
+            await d.js("location.hash = ''")
+            await tv.wait_for("!document.getElementById('idle').hidden", timeout=10, what="TV back to idle")
+            check(True, "leaving Cast mode returns the TV to its idle screen")
+
+            errors = [(p.name, e) for p in pages for e in p.errors if not str(e).startswith(("INFO:", "W0000", "I0000"))]
+            for name, e in errors:
+                print(f"  console error on {name}: {e}")
+            check(not errors, "no JavaScript errors in Cast mode")
+    except AssertionError:
+        for p in pages:
+            print(f"--- console of {p.name}:")
+            for line in p.logs[-15:]:
+                print("   ", line[:300])
+        raise
+    finally:
+        for p in pages:
+            await p.close()
+        static.terminate()
+        static.wait(5)
+        shutil.rmtree(site, ignore_errors=True)
 
 
 if __name__ == "__main__":
@@ -359,6 +479,8 @@ if __name__ == "__main__":
         sys.exit("Chrome/Chromium not found")
     try:
         asyncio.run(run(args.keep_screens))
+        asyncio.run(run_cast(args.keep_screens))
+        print(f"\nAll {len(passed)} checks passed.")
     except AssertionError as err:
         print(f"\nFAILED: {err}")
         sys.exit(1)

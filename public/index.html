@@ -6,14 +6,14 @@
   <meta name="color-scheme" content="light dark">
   <meta name="referrer" content="no-referrer">
   <title>Avatar Call</title>
-  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/assets/app.css">
-  <script type="module" src="/assets/js/app.js"></script>
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/app.css">
+  <script type="module" src="assets/js/app.js"></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
   <header class="topbar">
-    <span class="brand"><img src="/assets/icon.svg" alt="" width="28" height="28"> Avatar Call</span>
+    <span class="brand"><img src="assets/icon.svg" alt="" width="28" height="28"> Avatar Call</span>
     <span id="status-pill" class="pill" hidden></span>
   </header>
 
@@ -28,7 +28,12 @@
         <li>Voice, messages and avatar movement go directly between your two devices (peer-to-peer).</li>
         <li>Works in current browsers on phones, tablets and computers.</li>
       </ul>
-      <button id="start-btn" class="btn primary big" type="button">Start a call</button>
+      <div class="row">
+        <button id="start-btn" class="btn primary big" type="button">Start a call</button>
+        <button id="cast-mode-btn" class="btn big" type="button">Cast to a TV</button>
+      </div>
+      <p id="serverless-note" class="hint" hidden>Calls need the Avatar Call server running on your computer
+        (<code>./avatar --share</code>, see the README). <strong>Cast to a TV</strong> works right here.</p>
     </section>
 
     <!-- Lobby: set up your avatar and devices before joining -->
@@ -36,10 +41,12 @@
       <h1 id="lobby-title">Get ready</h1>
       <div class="lobby-grid">
         <div class="lobby-preview">
-          <div id="self-slot-lobby" class="tile-slot"></div>
-          <div class="device-row">
-            <button id="media-btn" class="btn primary" type="button">Turn on camera &amp; microphone</button>
-            <p id="media-status" class="hint" aria-live="polite">Your browser will ask for permission. The camera only animates your avatar; video stays on this device.</p>
+          <div id="self-slot-lobby" class="tile-slot square"></div>
+          <div id="device-slot-lobby">
+            <div id="device-row" class="device-row">
+              <button id="media-btn" class="btn primary" type="button">Turn on camera &amp; microphone</button>
+              <p id="media-status" class="hint" aria-live="polite">Your browser will ask for permission. The camera only animates your avatar; video stays on this device.</p>
+            </div>
           </div>
           <div id="invite-box" class="invite" hidden>
             <label for="invite-url">Invite link. Send this to your friend.</label>
@@ -53,6 +60,7 @@
           <button id="join-btn" class="btn primary big" type="button">Join call</button>
         </div>
 
+        <div id="customize-slot-lobby">
         <form id="style-form" class="customize" aria-labelledby="customize-title">
           <h2 id="customize-title">Your avatar</h2>
           <label class="field">
@@ -83,7 +91,7 @@
               </ol>
               <div class="row">
                 <button id="copy-prompt-btn" class="btn" type="button">Copy AI prompt</button>
-                <a class="btn" href="/assets/avatar-template.svg" download="avatar-template.svg">Download template</a>
+                <a class="btn" href="assets/avatar-template.svg" download="avatar-template.svg">Download template</a>
               </div>
               <p class="hint">Your photo goes to the AI service you choose, not to this app. If a feature doesn't move, the checker above says which part ids are missing. Ask the AI to add them.</p>
             </details>
@@ -91,6 +99,41 @@
           <div id="swatches"></div>
           <button id="randomize-btn" class="btn builtin-only" type="button">Surprise me</button>
         </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Cast mode: stream your avatar and voice to a TV -->
+    <section id="cast" class="panel" hidden aria-labelledby="cast-title">
+      <h1 id="cast-title">Cast to your TV</h1>
+      <p class="lead small">Your face animates your avatar here; the TV shows it full screen and plays your voice.
+        Your computer or phone talks to the TV directly over your home network.</p>
+      <div class="lobby-grid">
+        <div class="lobby-preview">
+          <div id="self-slot-cast" class="tile-slot square"></div>
+          <div id="device-slot-cast"></div>
+          <div class="cast-panel">
+            <div class="row">
+              <button id="cast-btn" class="btn primary big" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true" class="icon"><path d="M1 18v3h3a3 3 0 0 0-3-3Zm0-4v2a5 5 0 0 1 5 5h2a7 7 0 0 0-7-7Zm0-4v2a9 9 0 0 1 9 9h2A11 11 0 0 0 1 10Zm20-7H3a2 2 0 0 0-2 2v3h2V5h18v14h-7v2h7a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Z"/></svg>
+                <span>Cast to TV</span>
+              </button>
+              <button id="cast-stop-btn" class="btn big" type="button" hidden>Stop casting</button>
+            </div>
+            <p id="cast-status" class="cast-status" aria-live="polite"></p>
+            <label class="check">
+              <input id="cast-voice" type="checkbox" checked>
+              <span>Send my voice to the TV</span>
+            </label>
+            <p class="hint">Use headphones or keep your microphone away from the TV, or the TV's sound will echo back into the mic.</p>
+            <div class="row">
+              <button id="cast-preview-btn" class="btn" type="button">Preview TV view in a window</button>
+              <button id="cast-recenter-btn" class="btn" type="button">Re-center face</button>
+            </div>
+            <p class="hint">Casting needs Chrome on a computer or Android phone, on the same Wi-Fi as a Chromecast or Google TV.</p>
+          </div>
+        </div>
+        <div id="customize-slot-cast"></div>
       </div>
     </section>
 
@@ -154,7 +197,7 @@
       <p>The link still works if you want to go back in.</p>
       <div class="row">
         <button id="rejoin-btn" class="btn primary" type="button">Rejoin</button>
-        <a class="btn" href="/">New call</a>
+        <a class="btn" href="./">New call</a>
       </div>
     </section>
 

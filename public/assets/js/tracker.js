@@ -1,9 +1,10 @@
 // Webcam face tracking with MediaPipe Face Landmarker, reduced to avatar pose
 // parameters (see protocol.js). Runs entirely in the browser; frames never leave it.
-import { FaceLandmarker, FilesetResolver } from '/vendor/mediapipe/vision_bundle.mjs';
+import { FaceLandmarker, FilesetResolver } from '../../vendor/mediapipe/vision_bundle.mjs';
 import { neutralPose } from './protocol.js';
 
-const VENDOR = '/vendor/mediapipe';
+// Absolute URL, so the app also works when hosted under a sub-path (GitHub Pages).
+const VENDOR = new URL('../../vendor/mediapipe', import.meta.url).href;
 
 // Landmark indices (MediaPipe 478-point face mesh). Which eye ends up on the
 // image-left side is decided per frame from the x coordinates, not assumed.

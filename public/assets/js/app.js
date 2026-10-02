@@ -1,4 +1,6 @@
-import { MAX_SVG_BYTES, sanitizeSvg } from './custom-avatar.js';
+import { ensureAudioContext, levelMeter } from './audio.js';
+import { CastSender } from './cast.js';
+import { sanitizeSvg, SvgAssembler, svgMessages } from './custom-avatar.js';
 import { AvatarView, FACIAL_HAIR, GLASSES, HAIR_STYLES, PALETTES, randomStyle, sanitizeStyle } from './avatar.js';
 import { decodePose, encodePose, isNewer, neutralPose } from './protocol.js';
 import { Call, newRoomId } from './rtc.js';
@@ -6,8 +8,10 @@ import { Call, newRoomId } from './rtc.js';
 const $ = (id) => document.getElementById(id);
 const STYLE_KEY = 'avatar-call.style';
 const SVG_KEY = 'avatar-call.svg';
-const SVG_CHUNK = 16000; // characters per data-channel message
-const ROOM_RE = /^\/r\/([A-Za-z0-9_-]{10,64})\/?$/;
+// Routes live in the URL fragment (#room=…, #cast) so the app works from any
+// sub-path, e.g. GitHub Pages, and room ids never reach a server log.
+const ROOM_HASH_RE = /^#room=([A-Za-z0-9_-]{10,64})$/;
+const DEFAULT_ICE_SERVERS = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
 
 const COLOR_NAMES = {
   skin: ['Light', 'Fair', 'Medium', 'Tan', 'Brown', 'Deep'],
@@ -29,7 +33,8 @@ const OPTION_GROUPS = [
 console.assert(HAIR_STYLES.length === 6 && GLASSES.length === 3 && FACIAL_HAIR.length === 4);
 
 const state = {
-  config: { iceServers: [], publicUrl: null },
+  config: { iceServers: DEFAULT_ICE_SERVERS, publicUrl: null },
+  serverless: false, // true on static hosting (GitHub Pages): no call server, Cast mode only
   room: null,
   style: loadStyle(),
   stream: null,
@@ -40,12 +45,12 @@ const state = {
   call: null,
   seq: 0,
   lastRemoteSeq: null,
-  audioCtx: null,
   remoteMeter: null,
   localMeter: null,
   unread: 0,
   customSvg: null, // sanitized SVG text of our own custom avatar
-  incomingSvg: null, // { v, n, chunks } while receiving the peer's
+  cast: null, // CastSender while in Cast mode
+  castVoice: true,
 };
 
 // ---------------------------------------------------------------- helpers
@@ -63,7 +68,7 @@ function saveStyle() {
 }
 
 function show(id) {
-  for (const s of ['landing', 'lobby', 'call', 'ended', 'error']) $(s).hidden = s !== id;
+  for (const s of ['landing', 'lobby', 'cast', 'call', 'ended', 'error']) $(s).hidden = s !== id;
   document.body.dataset.screen = id;
 }
 
@@ -79,42 +84,11 @@ function fatal(text) {
 }
 
 function inviteUrl() {
-  const base = state.config.publicUrl || location.origin;
-  return `${base}/r/${state.room}`;
+  const base = state.config.publicUrl ? `${state.config.publicUrl}/` : location.origin + location.pathname;
+  return `${base}#room=${state.room}`;
 }
 
 const isLocalOnly = () => !state.config.publicUrl && ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
-
-function ensureAudioContext() {
-  if (!state.audioCtx) {
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (Ctx) state.audioCtx = new Ctx();
-  }
-  state.audioCtx?.resume?.().catch(() => {});
-  return state.audioCtx;
-}
-
-// Returns a function giving the current loudness (0..1) of a stream.
-function levelMeter(stream) {
-  const ctx = ensureAudioContext();
-  if (!ctx) return () => 0;
-  const source = ctx.createMediaStreamSource(stream);
-  const analyser = ctx.createAnalyser();
-  analyser.fftSize = 512;
-  source.connect(analyser);
-  const buf = new Float32Array(analyser.fftSize);
-  let level = 0;
-  const read = () => {
-    analyser.getFloatTimeDomainData(buf);
-    let sum = 0;
-    for (const v of buf) sum += v * v;
-    const rms = Math.sqrt(sum / buf.length);
-    level = Math.max(rms, level * 0.85); // fast attack, gentle release
-    return level;
-  };
-  read.disconnect = () => { try { source.disconnect(); } catch { /* already gone */ } };
-  return read;
-}
 
 // ---------------------------------------------------------------- avatars
 
@@ -126,8 +100,14 @@ selfAvatar.start();
 const remoteAvatar = new AvatarView($('remote-avatar'), { label: 'your friend' });
 remoteAvatar.setPose(neutralPose());
 
+// The preview avatar, device controls and customization form are shared by
+// the call lobby and Cast mode, so they move to whichever screen is showing.
 function placeSelfAvatar(where) {
-  $(where === 'call' ? 'self-slot-call' : 'self-slot-lobby').appendChild(selfSlot);
+  $(`self-slot-${where}`).appendChild(selfSlot);
+  if (where === 'lobby' || where === 'cast') {
+    $(`device-slot-${where}`).appendChild($('device-row'));
+    $(`customize-slot-${where}`).appendChild($('style-form'));
+  }
 }
 
 function tickMeters() {
@@ -192,8 +172,11 @@ function updateStyle(patch) {
   state.style = sanitizeStyle({ ...state.style, ...patch });
   selfAvatar.setStyle(state.style);
   saveStyle();
-  state.call?.sendMessage({ t: 'profile', style: state.style });
+  for (const sink of sinks()) sink.sendMessage({ t: 'profile', style: state.style });
 }
+
+// Everything that receives our avatar: the call peer and any TVs.
+const sinks = () => [state.call, state.cast].filter(Boolean);
 
 $('style-form').addEventListener('change', (ev) => {
   const t = ev.target;
@@ -265,6 +248,7 @@ function attachStream(stream) {
     state.localMeter?.disconnect?.();
     state.localMeter = levelMeter(new MediaStream([mic]));
     state.call?.setMicTrack(mic);
+    state.cast?.setMicTrack(state.castVoice ? mic : null);
   }
   if (cam) startTracking(cam);
 }
@@ -305,7 +289,8 @@ function stopTracking() {
   $('camera').srcObject = null;
   const idle = neutralPose();
   selfAvatar.setPose(idle);
-  state.call?.sendPose(encodePose(idle, nextSeq()));
+  const bytes = encodePose(idle, nextSeq());
+  for (const sink of sinks()) sink.sendPose(bytes);
   updateMediaStatus();
 }
 
@@ -313,7 +298,8 @@ const nextSeq = () => (state.seq = (state.seq + 1) & 0xffff);
 
 function onLocalPose(pose) {
   selfAvatar.setPose(pose);
-  state.call?.sendPose(encodePose(pose, nextSeq()));
+  const bytes = encodePose(pose, nextSeq());
+  for (const sink of sinks()) sink.sendPose(bytes);
 }
 
 function updateMediaStatus() {
@@ -340,9 +326,14 @@ function updateMediaStatus() {
 
 async function refreshConfig() {
   try {
-    const res = await fetch('/api/config', { cache: 'no-store' });
+    const res = await fetch('api/config', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.config = await res.json();
-  } catch { /* keep previous */ }
+    state.serverless = false;
+  } catch {
+    // Static hosting (e.g. GitHub Pages): there's no signaling server, so only Cast mode works.
+    state.serverless = true;
+  }
 }
 
 function renderInvite() {
@@ -466,31 +457,13 @@ async function importSvgFile(file) {
   importSvgText(await file.text());
 }
 
-// Send our custom SVG (or its removal) to the peer in chunks; `v` tags one transfer.
-function sendCustomSvg() {
-  const call = state.call;
-  if (!call) return;
-  const v = Math.random().toString(36).slice(2, 10);
-  const svg = state.customSvg;
-  if (!svg) { call.sendMessage({ t: 'svg', v, n: 0 }); return; }
-  const n = Math.ceil(svg.length / SVG_CHUNK);
-  for (let i = 0; i < n; i++) call.sendMessage({ t: 'svg', v, i, n, d: svg.slice(i * SVG_CHUNK, (i + 1) * SVG_CHUNK) });
+// Send our custom SVG (or its removal) to the call peer and TVs, or to one sink.
+function sendCustomSvg(only) {
+  const messages = svgMessages(state.customSvg);
+  for (const sink of only ? [only] : sinks()) for (const m of messages) sink.sendMessage(m);
 }
 
-function receiveSvgChunk(msg) {
-  const maxChunks = Math.ceil(MAX_SVG_BYTES / SVG_CHUNK);
-  if (typeof msg.v !== 'string' || !Number.isInteger(msg.n) || msg.n < 0 || msg.n > maxChunks) return;
-  if (msg.n === 0) { state.incomingSvg = null; remoteAvatar.setCustomSvg(null); return; }
-  if (!Number.isInteger(msg.i) || msg.i < 0 || msg.i >= msg.n || typeof msg.d !== 'string' || msg.d.length > SVG_CHUNK) return;
-  if (state.incomingSvg?.v !== msg.v) state.incomingSvg = { v: msg.v, n: msg.n, chunks: new Array(msg.n), got: 0 };
-  const inc = state.incomingSvg;
-  if (inc.chunks[msg.i] == null) { inc.chunks[msg.i] = msg.d; inc.got++; }
-  if (inc.got < inc.n) return;
-  state.incomingSvg = null;
-  const res = sanitizeSvg(inc.chunks.join('')); // never trust the peer's copy
-  if (res.ok) remoteAvatar.setCustomSvg(res.svg);
-  else console.warn('Ignored custom avatar from peer:', res.error);
-}
+const remoteSvgs = new SvgAssembler((svg) => remoteAvatar.setCustomSvg(svg));
 
 $('svg-upload-btn').addEventListener('click', () => $('svg-file').click());
 $('svg-file').addEventListener('change', (ev) => {
@@ -520,18 +493,18 @@ $('svg-remove-btn').addEventListener('click', () => {
 $('copy-prompt-btn').addEventListener('click', async (ev) => {
   const btn = ev.currentTarget;
   try {
-    const text = await (await fetch('/assets/avatar-prompt.txt')).text();
+    const text = await (await fetch('assets/avatar-prompt.txt')).text();
     await navigator.clipboard.writeText(text);
     btn.textContent = 'Prompt copied!';
     announce('AI prompt copied. Paste it into ChatGPT along with a photo of yourself.');
   } catch {
-    window.open('/assets/avatar-prompt.txt', '_blank', 'noopener');
+    window.open('assets/avatar-prompt.txt', '_blank', 'noopener');
   }
   setTimeout(() => { btn.textContent = 'Copy AI prompt'; }, 2000);
 });
 
 // Drag an .svg straight onto the lobby preview.
-const dropZone = $('self-slot-lobby');
+const dropZone = selfSlot;
 dropZone.addEventListener('dragover', (ev) => {
   if ([...(ev.dataTransfer?.items || [])].some((i) => i.kind === 'file')) {
     ev.preventDefault();
@@ -657,7 +630,7 @@ function joinCall() {
     setChatEnabled(true);
     call.sendMessage({ t: 'profile', style: state.style });
     call.sendMessage({ t: 'status', muted: !state.micTrack?.enabled });
-    sendCustomSvg();
+    sendCustomSvg(call);
   });
   call.addEventListener('channel-close', () => setChatEnabled(false));
   call.addEventListener('peer-left', () => {
@@ -679,7 +652,7 @@ function joinCall() {
     } else if (msg.t === 'status') {
       $('remote-muted').hidden = !msg.muted;
     } else if (msg.t === 'svg') {
-      receiveSvgChunk(msg);
+      remoteSvgs.push(msg);
     }
   });
   call.addEventListener('pose', ({ detail }) => {
@@ -707,7 +680,7 @@ function joinCall() {
 
 function resetRemote() {
   state.lastRemoteSeq = null;
-  state.incomingSvg = null;
+  remoteSvgs.reset();
   remoteAvatar.setCustomSvg(null);
   remoteAvatar.setPose(neutralPose());
   delete $('remote-tile').dataset.joined;
@@ -771,42 +744,154 @@ $('leave-btn').addEventListener('click', () => {
   show('ended');
 });
 $('rejoin-btn').addEventListener('click', joinCall);
-window.addEventListener('pagehide', () => state.call?.leave());
+window.addEventListener('pagehide', () => {
+  state.call?.leave();
+  state.cast?.closeAll(); // the TV app keeps running; reopening the page rejoins it
+});
+
+// ---------------------------------------------------------------- cast mode
+
+function castStatus(text, tone = '') {
+  const el = $('cast-status');
+  el.textContent = text;
+  el.dataset.tone = tone;
+}
+
+async function enterCast() {
+  state.room = null;
+  show('cast');
+  placeSelfAvatar('cast');
+  $('cast-voice').checked = state.castVoice;
+  if (state.cast) { renderCastTargets(); return; }
+
+  let appId = '';
+  try {
+    appId = (await (await fetch('cast-config.json', { cache: 'no-store' })).json()).receiverAppId || '';
+  } catch { /* no config file */ }
+  const sender = new CastSender({ appId, iceServers: state.config.iceServers || DEFAULT_ICE_SERVERS });
+  state.cast = sender;
+  sender.setMicTrack(state.castVoice ? state.micTrack : null);
+
+  sender.addEventListener('target-ready', ({ detail: { target, warning } }) => {
+    // Bring the new TV up to date: who we are, our drawing, and whether we're muted.
+    target.sendMessage({ t: 'profile', style: state.style });
+    for (const m of svgMessages(state.customSvg)) target.sendMessage(m);
+    target.sendMessage({ t: 'status', muted: !state.castVoice || !state.micTrack?.enabled });
+    renderCastTargets(warning);
+    announce(`Casting to ${target.label}`);
+  });
+  sender.addEventListener('targets', () => renderCastTargets());
+  sender.addEventListener('cast-state', () => renderCastTargets());
+
+  castStatus('Checking for Cast support…');
+  sender.status = await sender.init();
+  renderCastTargets();
+}
+
+function renderCastTargets(warning) {
+  const sender = state.cast;
+  if (!sender) return;
+  const tv = sender.castTarget;
+  const previews = [...sender.targets].filter((t) => t.kind === 'preview').length;
+  const castBtn = $('cast-btn');
+  castBtn.disabled = sender.status !== 'ready' || !!tv;
+  $('cast-stop-btn').hidden = !tv;
+
+  if (warning) { castStatus(warning, 'warn'); return; }
+  if (tv) {
+    const live = tv.mode === 'webrtc' || tv.mode === 'fallback';
+    castStatus(live ? `Casting to ${tv.label}${tv.mode === 'fallback' ? ' (avatar only, no voice)' : ''}.` : `Connecting to ${tv.label}…`, live ? 'ok' : '');
+  } else if (sender.status === 'no-app-id') {
+    castStatus('Casting isn\'t set up yet: add your Cast application ID to cast-config.json (see docs/casting.md). The preview window works without it.', 'warn');
+  } else if (sender.status === 'unsupported') {
+    castStatus('Casting needs Google Chrome (on a computer or Android). The preview window still works here.', 'warn');
+  } else if (sender.castState === 'NO_DEVICES_AVAILABLE') {
+    castStatus('No Cast devices found. Make sure your TV or Chromecast is on and on the same Wi-Fi.');
+  } else if (sender.castState === 'CONNECTING') {
+    castStatus('Connecting to your TV…');
+  } else if (previews) {
+    castStatus('Showing your avatar in the preview window.', 'ok');
+  } else {
+    castStatus(sender.status === 'ready' ? 'Ready to cast.' : '');
+  }
+}
+
+$('cast-mode-btn').addEventListener('click', () => { location.hash = 'cast'; });
+$('cast-btn').addEventListener('click', async () => {
+  ensureAudioContext();
+  if (!state.camTrack && !state.micTrack) enableMedia();
+  try {
+    await state.cast.requestSession();
+  } catch (err) {
+    if (err !== 'cancel' && err?.code !== 'cancel') console.warn('Cast session not started', err);
+  }
+});
+$('cast-stop-btn').addEventListener('click', () => {
+  state.cast?.stopCasting();
+  announce('Stopped casting');
+});
+$('cast-preview-btn').addEventListener('click', () => {
+  if (!state.camTrack && !state.micTrack) enableMedia();
+  if (!state.cast?.openPreview(new URL('receiver.html', location.href).href)) {
+    castStatus('The preview window was blocked. Allow pop-ups for this site and try again.', 'warn');
+  }
+});
+$('cast-voice').addEventListener('change', (ev) => {
+  state.castVoice = ev.target.checked;
+  state.cast?.setMicTrack(state.castVoice ? state.micTrack : null);
+  state.cast?.sendMessage({ t: 'status', muted: !state.castVoice || !state.micTrack?.enabled });
+  announce(state.castVoice ? 'Your voice is going to the TV' : 'Your voice is no longer sent to the TV');
+});
+$('cast-recenter-btn').addEventListener('click', () => {
+  state.tracker?.recenter();
+  announce('Re-centering. Look straight at the screen.');
+});
 
 // ---------------------------------------------------------------- boot
 
 async function enterRoom(room) {
   state.room = room;
+  if (state.serverless) {
+    fatal('This call link needs the Avatar Call server, which isn\'t running at this address. Ask the person who invited you for a new link.');
+    return;
+  }
   show('lobby');
   placeSelfAvatar('lobby');
   renderInvite();
   if (isLocalOnly()) pollPublicUrl();
 }
 
-$('start-btn').addEventListener('click', () => {
-  const room = newRoomId();
-  history.pushState({}, '', `/r/${room}`);
-  enterRoom(room);
-});
+$('start-btn').addEventListener('click', () => { location.hash = `room=${newRoomId()}`; });
 $('media-btn').addEventListener('click', enableMedia);
 $('join-btn').addEventListener('click', joinCall);
 
-window.addEventListener('popstate', () => {
+window.addEventListener('hashchange', () => {
   leaveCall();
+  if (location.hash !== '#cast' && state.cast?.targets.size) {
+    state.cast.stopCasting();
+    state.cast.closeAll();
+  }
   route();
 });
 
 function route() {
-  const m = location.pathname.match(ROOM_RE);
+  const m = location.hash.match(ROOM_HASH_RE);
   if (m) enterRoom(m[1]);
-  else { state.room = null; show('landing'); placeSelfAvatar('lobby'); }
+  else if (location.hash === '#cast') enterCast();
+  else {
+    state.room = null;
+    show('landing');
+    placeSelfAvatar('lobby');
+    $('start-btn').disabled = state.serverless;
+    $('serverless-note').hidden = !state.serverless;
+  }
 }
 
 async function boot() {
   buildSwatches();
   loadCustomSvg();
   if (!window.RTCPeerConnection) {
-    fatal('This browser does not support peer-to-peer calls. Please open the link in a current version of Chrome, Edge, Firefox or Safari.');
+    fatal('This browser does not support peer-to-peer connections. Please open the link in a current version of Chrome, Edge, Firefox or Safari.');
     return;
   }
   await refreshConfig();
