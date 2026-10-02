@@ -56,3 +56,4 @@ body {
 body.preview { font-size: 18px; }
 body.preview .label { font-size: 18px; padding: 6px 14px; }
 body.preview .idle h1 { font-size: 36px; }
+.idle a { color: var(--accent); }

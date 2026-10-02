@@ -174,11 +174,26 @@ function loadScript(src) {
   });
 }
 
+// Opened (or tab-cast) from an ordinary browser instead of being launched by
+// the app on a Cast device: explain how to get here properly.
+function explainWrongEntry() {
+  const appUrl = new URL('./', location.href).href;
+  const text = $('idle-text');
+  text.replaceChildren(
+    'This is the TV side of Avatar Call, so it waits here for a sender. Don\'t open or cast this page yourself. In Chrome, open ',
+    Object.assign(document.createElement('a'), { href: appUrl, textContent: appUrl.replace(/^https?:\/\//, '') }),
+    ', choose Cast to a TV, and press its Cast to TV button. Your TV then loads this page by itself.',
+  );
+}
+
 async function startCast() {
+  // Cast receivers identify themselves with "CrKey" in the user agent.
+  const onCastDevice = /CrKey/i.test(navigator.userAgent);
+  if (!onCastDevice) explainWrongEntry();
   try {
     await loadScript(CAF_URL);
   } catch (err) {
-    showIdle('This page is the TV side of Avatar Call. Open it by casting from the app.');
+    if (onCastDevice) showIdle('Couldn\'t load Google Cast. Try casting again.');
     console.error(err);
     return;
   }

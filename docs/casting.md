@@ -27,8 +27,9 @@ The repository's workflow (`.github/workflows/pages.yml`) publishes `public/` to
 https://<your-user>.github.io/<repo>/receiver.html
 ```
 
-Open that URL in a normal browser as a quick check. It should show the dark Avatar Call "Ready" screen. Outside a
-Cast device it can't do anything else, and the console shows the Cast SDK failing to reach `localhost:8008`. That's expected.
+Open that URL in a normal browser as a quick check. It should show a dark Avatar Call screen explaining that it's the
+TV side. **Don't open or cast `receiver.html` yourself.** Chrome's "Cast tab" only mirrors the tab, and the page just
+waits for a sender. Your TV loads it by itself when you press **Cast to TV** in the app.
 
 ### 2. Register a Cast application
 
@@ -81,6 +82,7 @@ after the last sender disconnects.
 
 | Symptom | Likely cause |
 | --- | --- |
+| The TV shows "Ready. Start casting from Avatar Call…" and nothing happens | `receiver.html` was opened or tab-cast directly. Open the main site instead and use its **Cast to TV** button. |
 | "Casting isn't set up yet" | `public/cast-config.json` has no `receiverAppId`. |
 | "Casting needs Google Chrome" | You're not in Chrome, or Google's Cast script couldn't load (ad blockers sometimes block `gstatic.com`). |
 | Your TV isn't in the device list | The TV is on a different network, or the network isolates devices. |
