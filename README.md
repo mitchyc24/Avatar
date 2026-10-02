@@ -9,6 +9,8 @@ computer. Your friend just opens a link: no install, no account.
 - **Bring your own avatar.** Use any SVG that follows the [custom avatar schema](docs/custom-avatars.md). The app includes an AI prompt that turns a photo of you into one.
 - **Cast to a TV.** Show your avatar full screen on a Chromecast or Google TV and play your voice there ([docs/casting.md](docs/casting.md)).
 
+**Live site (Cast mode):** https://mitchyc24.github.io/Avatar/ · TV receiver: https://mitchyc24.github.io/Avatar/receiver.html
+
 ## Quick start: calls
 
 ```bash
@@ -131,3 +133,7 @@ The tests run headless Chrome instances that use a face photo as a fake camera. 
 Both suites also check that there are no JavaScript errors.
 
 Requirements: Python 3.10+ with `aiohttp`, `openssl` (for `--lan`), and Google Chrome plus `ffmpeg` for the tests.
+
+## License
+
+[MIT](LICENSE). MediaPipe (downloaded by `setup.sh`, not stored in this repo) is Apache-2.0.
