@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+"""End-to-end test: two headless Chrome instances join the same room with fake
+cameras (a face photo) and fake microphones, then we check that they connect
+peer-to-peer, animate each other's avatars, exchange chat and hear audio.
+
+Usage: python3 tests/e2e.py [--keep-screens DIR]
+Needs google-chrome and ffmpeg. Fixtures are generated into tests/fixtures/.
+"""
+
+import argparse
+import asyncio
+import itertools
+import json
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+from pathlib import Path
+
+import aiohttp
+
+ROOT = Path(__file__).resolve().parent.parent
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+PORTRAIT_URL = "https://storage.googleapis.com/mediapipe-assets/portrait.jpg"
+SERVER_PORT = 8799
+TILT_RAD = 0.3  # clockwise tilt baked into person A's fake camera
+
+CHROME = shutil.which("google-chrome") or shutil.which("chromium") or shutil.which("chromium-browser")
+
+
+def make_fixtures():
+    FIXTURES.mkdir(exist_ok=True)
+    portrait = FIXTURES / "portrait.jpg"
+    if not portrait.exists():
+        urllib.request.urlretrieve(PORTRAIT_URL, portrait)
+    clips = {
+        # Still, tilted clockwise: lets us check the direction of head roll.
+        "tilt.y4m": f"crop=560:420:130:0,scale=640:480,rotate={TILT_RAD}:fillcolor=gray",
+        # Gently rocking head, so the avatar visibly moves.
+        "rock.y4m": "crop=560:420:130:0,scale=640:480,rotate='0.3*sin(2*PI*t/4)':fillcolor=gray",
+    }
+    for name, vf in clips.items():
+        out = FIXTURES / name
+        if not out.exists():
+            subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-loop", "1", "-i", str(portrait),
+                            "-t", "4", "-r", "15", "-vf", vf, "-pix_fmt", "yuv420p", str(out)], check=True)
+    return FIXTURES / "tilt.y4m", FIXTURES / "rock.y4m"
+
+
+class Page:
+    """Minimal Chrome DevTools Protocol client for one tab."""
+
+    def __init__(self, name, port, video):
+        self.name, self.port, self.video = name, port, video
+        self.ids = itertools.count(1)
+        self.pending = {}
+        self.errors = []
+        self.logs = []
+
+    async def launch(self, session):
+        self.profile = tempfile.mkdtemp(prefix=f"avatar-e2e-{self.name}-")
+        self.proc = subprocess.Popen([
+            CHROME, "--headless=new", f"--remote-debugging-port={self.port}", f"--user-data-dir={self.profile}",
+            "--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream",
+            f"--use-file-for-fake-video-capture={self.video}",
+            "--autoplay-policy=no-user-gesture-required", "--no-first-run", "--no-default-browser-check",
+            "--enable-unsafe-swiftshader", "--window-size=1280,860", "about:blank",
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            try:
+                async with session.get(f"http://127.0.0.1:{self.port}/json/list") as r:
+                    targets = await r.json()
+                page = next(t for t in targets if t["type"] == "page")
+                break
+            except Exception:
+                await asyncio.sleep(0.1)
+        else:
+            raise RuntimeError(f"{self.name}: Chrome did not start")
+        self.ws = await session.ws_connect(page["webSocketDebuggerUrl"], max_msg_size=0)
+        self.reader = asyncio.create_task(self.read())
+        await self.cmd("Runtime.enable")
+        await self.cmd("Page.enable")
+
+    async def read(self):
+        async for msg in self.ws:
+            data = json.loads(msg.data)
+            if "id" in data and data["id"] in self.pending:
+                self.pending.pop(data["id"]).set_result(data)
+            elif data.get("method") == "Runtime.exceptionThrown":
+                d = data["params"]["exceptionDetails"]
+                self.errors.append(d.get("exception", {}).get("description") or d.get("text"))
+            elif data.get("method") == "Runtime.consoleAPICalled":
+                p = data["params"]
+                text = " ".join(str(a.get("value", a.get("description", ""))) for a in p["args"])
+                self.logs.append(f"[{p['type']}] {text}")
+                if p["type"] == "error":
+                    self.errors.append(text)
+
+    async def cmd(self, method, **params):
+        i = next(self.ids)
+        fut = asyncio.get_running_loop().create_future()
+        self.pending[i] = fut
+        await self.ws.send_json({"id": i, "method": method, "params": params})
+        res = await asyncio.wait_for(fut, 60)
+        if "error" in res:
+            raise RuntimeError(f"{self.name}: {method} failed: {res['error']}")
+        return res["result"]
+
+    async def js(self, expr):
+        res = await self.cmd("Runtime.evaluate", expression=expr, awaitPromise=True, returnByValue=True)
+        if "exceptionDetails" in res:
+            raise RuntimeError(f"{self.name}: JS error in {expr!r}: {res['exceptionDetails']}")
+        return res["result"].get("value")
+
+    async def wait_for(self, expr, timeout=30, what=None):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if await self.js(expr):
+                return
+            await asyncio.sleep(0.25)
+        raise AssertionError(f"{self.name}: timed out waiting for {what or expr}")
+
+    async def screenshot(self, path):
+        import base64
+        res = await self.cmd("Page.captureScreenshot", format="png")
+        Path(path).write_bytes(base64.b64decode(res["data"]))
+
+    async def close(self):
+        try:
+            await self.ws.close()
+        except Exception:
+            pass
+        self.proc.terminate()
+        try:
+            self.proc.wait(5)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+        shutil.rmtree(self.profile, ignore_errors=True)
+
+
+passed = []
+
+
+def check(cond, label):
+    print(("  PASS  " if cond else "  FAIL  ") + label)
+    if not cond:
+        raise AssertionError(label)
+    passed.append(label)
+
+
+async def run(screens):
+    tilt, rock = make_fixtures()
+    server = subprocess.Popen([sys.executable, str(ROOT / "server.py"), "--port", str(SERVER_PORT), "--no-open"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    pages = []
+    try:
+        async with aiohttp.ClientSession() as session:
+            for _ in range(50):
+                try:
+                    async with session.get(f"http://127.0.0.1:{SERVER_PORT}/api/config") as r:
+                        if r.status == 200:
+                            break
+                except aiohttp.ClientError:
+                    await asyncio.sleep(0.1)
+
+            a, b = Page("A", 9331, tilt), Page("B", 9332, rock)
+            pages = [a, b]
+            await asyncio.gather(a.launch(session), b.launch(session))
+            room = "e2e" + secrets.token_urlsafe(12)
+            url = f"http://localhost:{SERVER_PORT}/r/{room}"
+            print(f"Room: {url}")
+
+            for p, name in ((a, "Alice"), (b, "Bob")):
+                await p.cmd("Page.navigate", url=url)
+                await p.wait_for("document.readyState === 'complete' && !!window.__avatarCall", what="app load")
+                await p.js(f"""(() => {{ const i = document.getElementById('name-input');
+                    i.value = {json.dumps(name)}; i.dispatchEvent(new Event('input', {{bubbles: true}})); }})()""")
+                await p.js("document.getElementById('media-btn').click()")
+
+            for p in pages:
+                await p.wait_for("!!window.__avatarCall.state.tracker && window.__avatarCall.state.tracker.running",
+                                 timeout=90, what="face tracker to start")
+                delegate = await p.js("window.__avatarCall.state.tracker.delegate")
+                await p.wait_for("window.__avatarCall.selfAvatar.target.tracking === true", timeout=30,
+                                 what="own face to be tracked")
+                check(True, f"{p.name}: face tracked locally ({delegate} delegate)")
+                check(await p.js("!!window.__avatarCall.state.micTrack"), f"{p.name}: microphone captured")
+
+            for p in pages:
+                await p.js("document.getElementById('join-btn').click()")
+            for p in pages:
+                await p.wait_for("window.__avatarCall.state.call?.state === 'connected'", timeout=30,
+                                 what="peer connection")
+                await p.wait_for("!document.getElementById('chat-input').disabled", timeout=15, what="chat channel")
+                check(True, f"{p.name}: connected peer-to-peer, chat channel open")
+
+            # Chat both ways.
+            async def say(p, text):
+                await p.js(f"""(() => {{ const i = document.getElementById('chat-input'); i.value = {json.dumps(text)};
+                    document.getElementById('chat-form').requestSubmit(); }})()""")
+            await say(a, "Hi Bob! <b>not bold</b>")
+            await b.wait_for("[...document.querySelectorAll('#chat-log li.theirs .text')].some(e => e.textContent === 'Hi Bob! <b>not bold</b>')",
+                             what="chat from A")
+            check(await b.js("!document.querySelector('#chat-log b')"), "B: chat text is shown as plain text (no HTML injection)")
+            await say(b, "Hey Alice 👋")
+            await a.wait_for("[...document.querySelectorAll('#chat-log li.theirs .text')].some(e => e.textContent === 'Hey Alice 👋')",
+                             what="chat from B")
+            check(True, "chat delivered in both directions")
+
+            # Profiles.
+            await a.wait_for("document.getElementById('remote-name').textContent === 'Bob'", what="B's name on A")
+            await b.wait_for("document.getElementById('remote-name').textContent === 'Alice'", what="A's name on B")
+            check(True, "display names exchanged")
+
+            # Avatar motion from the other side's face.
+            await asyncio.sleep(2.5)
+            for p in pages:
+                await p.wait_for("window.__avatarCall.remoteAvatar.target.tracking === true", what="remote pose stream")
+            check(True, "both sides receive live face-tracking poses")
+            roll = await b.js("window.__avatarCall.remoteAvatar.current.roll")
+            expected = TILT_RAD / (3.14159 / 4)
+            check(abs(roll - expected) < 0.15,
+                  f"B sees A's clockwise head tilt as clockwise (roll {roll:+.2f}, expected ≈{expected:+.2f})")
+            rolls = []
+            for _ in range(16):
+                rolls.append(await a.js("window.__avatarCall.remoteAvatar.current.roll"))
+                await asyncio.sleep(0.25)
+            check(max(rolls) - min(rolls) > 0.25, f"A sees B's head rocking (roll range {min(rolls):+.2f}..{max(rolls):+.2f})")
+
+            # Audio: Chrome's fake microphone plays a periodic beep; check its energy arrives at the other side.
+            audio_stats = """(async () => {
+                const pc = window.__avatarCall.state.call.pc; const out = {energy: 0, bytesIn: 0, bytesOut: 0};
+                (await pc.getStats()).forEach((s) => {
+                  if (s.type === 'inbound-rtp' && s.kind === 'audio') { out.energy += s.totalAudioEnergy || 0; out.bytesIn += s.bytesReceived; }
+                  if (s.type === 'outbound-rtp' && s.kind === 'audio') out.bytesOut += s.bytesSent;
+                });
+                out.senders = pc.getSenders().map((s) => s.track?.kind || null);
+                out.directions = pc.getTransceivers().map((t) => t.currentDirection);
+                out.polite = window.__avatarCall.state.call.polite;
+                return out; })()"""
+            before = [await p.js(audio_stats) for p in pages]
+            await asyncio.sleep(3)
+            after = [await p.js(audio_stats) for p in pages]
+            for p, s0, s1 in zip(pages, before, after):
+                gained = s1["energy"] - s0["energy"]
+                print(f"        {p.name}: {s1}")
+                check(gained > 1e-4, f"{p.name}: hears the other side's microphone (audio energy +{gained:.4f})")
+
+            # Mute shows up remotely.
+            await a.js("document.getElementById('mic-btn').click()")
+            await b.wait_for("!document.getElementById('remote-muted').hidden", what="mute badge")
+            await a.js("document.getElementById('mic-btn').click()")
+            await b.wait_for("document.getElementById('remote-muted').hidden", what="unmute")
+            check(True, "mute state shown to the other side")
+
+            if screens:
+                Path(screens).mkdir(parents=True, exist_ok=True)
+                for p in pages:
+                    await p.screenshot(Path(screens) / f"call_{p.name}.png")
+
+            # Leave and rejoin.
+            await a.js("document.getElementById('leave-btn').click()")
+            await b.wait_for("window.__avatarCall.state.call.state === 'waiting'", timeout=5, what="peer-left")
+            check(await b.js("[...document.querySelectorAll('#chat-log li.sys')].some(e => e.textContent.includes('Alice left'))"),
+                  "B is told immediately when A leaves")
+            await a.js("document.getElementById('rejoin-btn').click()")
+            for p in pages:
+                await p.wait_for("window.__avatarCall.state.call?.state === 'connected'", timeout=30, what="reconnect")
+            check(True, "A rejoins and both reconnect")
+
+            # A third person is turned away.
+            c = Page("C", 9333, rock)
+            pages.append(c)
+            await c.launch(session)
+            await c.cmd("Page.navigate", url=url)
+            await c.wait_for("!!window.__avatarCall", what="app load")
+            await c.js("document.getElementById('join-btn').click()")
+            await c.wait_for("window.__avatarCall.state.call?.state === 'full'", timeout=10, what="room full")
+            check(await a.js("window.__avatarCall.state.call.state") == "connected", "a third person cannot disrupt the call")
+
+            if screens:
+                await a.cmd("Emulation.setDeviceMetricsOverride", width=390, height=844, deviceScaleFactor=2, mobile=True)
+                await asyncio.sleep(0.5)
+                await a.screenshot(Path(screens) / "call_A_phone.png")
+                await b.js("document.getElementById('leave-btn').click()")
+                await b.cmd("Page.navigate", url=f"http://localhost:{SERVER_PORT}/r/{room}x")
+                await b.wait_for("!!window.__avatarCall", what="lobby")
+                await asyncio.sleep(1)
+                await b.screenshot(Path(screens) / "lobby_B.png")
+
+            # MediaPipe logs informational messages through console.error.
+            errors = [(p.name, e) for p in pages for e in p.errors if not str(e).startswith(("INFO:", "W0000", "I0000"))]
+            for name, e in errors:
+                print(f"  console error on {name}: {e}")
+            check(not errors, "no JavaScript errors")
+    finally:
+        for p in pages:
+            await p.close()
+        server.terminate()
+        server.wait(5)
+    print(f"\nAll {len(passed)} checks passed.")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--keep-screens", metavar="DIR", help="save screenshots here")
+    args = parser.parse_args()
+    if not CHROME:
+        sys.exit("Chrome/Chromium not found")
+    try:
+        asyncio.run(run(args.keep_screens))
+    except AssertionError as err:
+        print(f"\nFAILED: {err}")
+        sys.exit(1)

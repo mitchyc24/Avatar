@@ -1,0 +1,8 @@
+# Downloaded by ./setup.sh
+public/vendor/
+bin/
+# Generated
+certs/
+tests/fixtures/
+config.json
+__pycache__/

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Start Avatar Call.
+#   ./avatar            local only (http://localhost:8787)
+#   ./avatar --share    plus a public HTTPS link to send to a friend
+#   ./avatar --lan      plus HTTPS on your home network (self-signed certificate)
+set -euo pipefail
+cd "$(dirname "$0")"
+
+if [[ " $* " == *" --share "* ]]; then
+  [[ -x bin/cloudflared ]] || command -v cloudflared >/dev/null || ./setup.sh --tunnel
+fi
+[[ -f public/vendor/mediapipe/face_landmarker.task ]] || ./setup.sh
+
+exec python3 server.py "$@"
